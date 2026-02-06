@@ -1,0 +1,43 @@
+# Image Sources Configuration
+#
+# Copy this file to image-sources.yaml and customize for your environment:
+#   cp image-sources.yaml.example image-sources.yaml
+#
+# Defines where to fetch Chainguard VM images from.
+
+# Default settings applied to all sources unless overridden
+defaults:
+  # Proxmox storage target for imported images
+  storage: local-lvm
+  # Image format after import (qcow2, raw, vmdk)
+  format: qcow2
+  # Directory on Proxmox where qcow2 images are stored
+  # This path must be writable from your local machine (via SCP or NFS)
+  import_dir: /var/lib/vz/images/import
+
+# Image sources
+# Each source defines how to obtain a specific VM image
+sources:
+  # Chainguard VM from GCS bucket (qemu-docker-full variant)
+  chainguard-k8s:
+    type: gcs
+    # GCS bucket path - script will find latest timestamped directory
+    # Access requires: gcloud auth login
+    bucket_path: "gs://chainguard-vms-eap/amd64/qemu-docker-full"
+    # File pattern to download (only qcow2)
+    file_pattern: "*.qcow2"
+    # Base name of the qcow2 file (without timestamp)
+    template_name: qemu-docker-full-amd64
+
+  # Alternative: qemu-agents-docker-dev variant
+  # chainguard-k8s-dev:
+  #   type: gcs
+  #   bucket_path: "gs://chainguard-vms-eap/amd64/qemu-agents-docker-dev"
+  #   file_pattern: "*.qcow2"
+  #   template_name: chainguard-k8s-dev
+
+# Image selection for cluster roles
+# Maps cluster roles to image sources defined above
+role_images:
+  control_plane: chainguard-k8s
+  worker: chainguard-k8s

@@ -1,0 +1,23 @@
+# MetalLB Configuration
+#
+# Copy this file to metallb-config.yaml and customize for your environment:
+#   cp metallb-config.yaml.example metallb-config.yaml
+#
+# Configure the IP address pool for LoadBalancer services.
+# These IPs must be in your network and not used by other devices.
+
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: first-pool
+spec:
+  addresses:
+  # IP range for LoadBalancer services
+  # Adjust to match your network's available IP range
+  - 192.168.1.200-192.168.1.210
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: example
+  namespace: metallb-system

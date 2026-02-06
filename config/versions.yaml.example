@@ -1,0 +1,36 @@
+# Component Versions Configuration
+#
+# Centralizes version information for all Kubernetes cluster components.
+# These values are used by bootstrap scripts to ensure consistent deployments.
+
+# Kubernetes version (should match cluster.yaml kubernetes_version)
+kubernetes:
+  version: "1.35"
+
+# Container image settings
+images:
+  # Default registry for Chainguard images
+  # Use cgr.dev/chainguard for public images
+  # Use your own registry (e.g., Harbor) for private/mirrored images
+  registry: "cgr.dev/chainguard"
+
+# Calico CNI
+calico:
+  version: "v3.31.3"
+  tigera_operator: "v1.40.4"
+
+# MetalLB load balancer
+metallb:
+  version: "0.15"
+  frr_version: "10.5"
+
+# NFS subdir external provisioner
+nfs_provisioner:
+  version: "4.0"
+
+# CNI plugins
+cni_plugins:
+  version: "1.6.2"
+
+# Default SSH user for Chainguard VMs
+vm_ssh_user: "linky"

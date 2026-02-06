@@ -1,0 +1,23 @@
+# Local configuration (copy from *.example files)
+config/cluster.yaml
+config/image-sources.yaml
+config/metallb-config.yaml
+config/versions.yaml
+
+# Generated files
+/kubeconfig
+/kubeconfig.*
+
+# Temporary files and images
+tmp/
+*.qcow2
+
+# Claude Code settings
+.claude/settings.local.json
+scripts/.claude/settings.local.json
+
+# OS/editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
