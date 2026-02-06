@@ -129,6 +129,7 @@ Component versions (usually no changes needed):
 | `destroy.sh` | Destroy all cluster VMs |
 | `mirror-image.sh` | Copy container images between registries |
 | `deploy-scanners.sh` | Deploy vulnerability scanner via Helm |
+| `check-versions.sh` | Check for component updates (`--update` to apply) |
 
 ## Architecture
 
