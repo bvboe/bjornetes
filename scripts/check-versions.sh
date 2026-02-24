@@ -11,7 +11,8 @@
 #
 # Components checked:
 #   - Kubernetes (GitHub: kubernetes/kubernetes)
-#   - Tigera Operator (GitHub: tigera/operator) - determines Calico version
+#   - Calico (GitHub: projectcalico/calico)
+#   - Tigera Operator (GitHub: tigera/operator)
 #   - MetalLB (GitHub: metallb/metallb)
 #   - NFS Provisioner (GitHub: kubernetes-sigs/nfs-subdir-external-provisioner)
 #   - CNI Plugins (GitHub: containernetworking/plugins)
@@ -85,6 +86,7 @@ echo ""
 
 # Current versions from config
 CURRENT_K8S=$(yaml_get "$VERSIONS_FILE" ".kubernetes.version" "")
+CURRENT_CALICO=$(yaml_get "$VERSIONS_FILE" ".calico.version" "")
 CURRENT_TIGERA=$(yaml_get "$VERSIONS_FILE" ".calico.tigera_operator" "")
 CURRENT_METALLB=$(yaml_get "$VERSIONS_FILE" ".metallb.version" "")
 CURRENT_NFS=$(yaml_get "$VERSIONS_FILE" ".nfs_provisioner.version" "")
@@ -98,6 +100,13 @@ if $CAN_CHECK_IMAGES; then
     # Check Kubernetes
     if ! image_exists "${IMAGE_REGISTRY}/kubernetes-kube-apiserver:${CURRENT_K8S}"; then
         MISSING_IMAGES+=("Kubernetes ${CURRENT_K8S} (kubernetes-kube-apiserver:${CURRENT_K8S})")
+        HAS_MISSING=true
+    fi
+
+    # Check Calico
+    CALICO_TAG="${CURRENT_CALICO#v}"
+    if ! image_exists "${IMAGE_REGISTRY}/calico-node:${CALICO_TAG}"; then
+        MISSING_IMAGES+=("Calico ${CURRENT_CALICO} (calico-node:${CALICO_TAG})")
         HAS_MISSING=true
     fi
 
@@ -133,6 +142,7 @@ fi
 log_info "Fetching latest versions from GitHub..."
 
 LATEST_K8S=$(github_latest_release "kubernetes/kubernetes")
+LATEST_CALICO=$(github_latest_release "projectcalico/calico")
 LATEST_TIGERA=$(github_latest_release "tigera/operator")
 LATEST_METALLB=$(github_latest_release "metallb/metallb")
 LATEST_NFS=$(github_latest_release "kubernetes-sigs/nfs-subdir-external-provisioner")
@@ -161,6 +171,21 @@ else
         HAS_UPDATES=true
     else
         printf "  %-20s %-12s -> %-12s %s\n" "Kubernetes:" "$CURRENT_K8S" "$LATEST_K8S_MINOR" "(image not available)"
+    fi
+fi
+
+# Check Calico (validate image exists)
+if [[ "$CURRENT_CALICO" == "$LATEST_CALICO" ]]; then
+    printf "  %-20s %-12s %s\n" "Calico:" "$CURRENT_CALICO" "(up to date)"
+else
+    # Chainguard tags omit 'v' prefix
+    CALICO_TAG="${LATEST_CALICO#v}"
+    if image_exists "${IMAGE_REGISTRY}/calico-node:${CALICO_TAG}"; then
+        printf "  %-20s %-12s -> %-12s %s\n" "Calico:" "$CURRENT_CALICO" "$LATEST_CALICO" "(update available)"
+        UPDATE_CALICO="$LATEST_CALICO"
+        HAS_UPDATES=true
+    else
+        printf "  %-20s %-12s -> %-12s %s\n" "Calico:" "$CURRENT_CALICO" "$LATEST_CALICO" "(image not available)"
     fi
 fi
 
@@ -227,6 +252,15 @@ if $UPDATE && $HAS_UPDATES; then
             sed -i "/^kubernetes:/,/^[a-z]/ s/^\(  version: *\"\)v\{0,1\}[0-9.]*\(\"\)/\1${UPDATE_K8S}\2/" "$VERSIONS_FILE"
         fi
         log_success "  Updated Kubernetes to $UPDATE_K8S"
+    fi
+
+    if [[ -n "${UPDATE_CALICO:-}" ]]; then
+        if [[ "$(uname)" == "Darwin" ]]; then
+            sed -i '' "/^calico:/,/^[a-z]/ s/^\(  version: *\"\)v\{0,1\}[0-9.]*\(\"\)/\1${UPDATE_CALICO}\2/" "$VERSIONS_FILE"
+        else
+            sed -i "/^calico:/,/^[a-z]/ s/^\(  version: *\"\)v\{0,1\}[0-9.]*\(\"\)/\1${UPDATE_CALICO}\2/" "$VERSIONS_FILE"
+        fi
+        log_success "  Updated Calico to $UPDATE_CALICO"
     fi
 
     if [[ -n "${UPDATE_TIGERA:-}" ]]; then
