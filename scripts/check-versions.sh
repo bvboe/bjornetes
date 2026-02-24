@@ -12,6 +12,7 @@
 # Components checked:
 #   - Tigera Operator (GitHub: tigera/operator) - determines Calico version
 #   - MetalLB (GitHub: metallb/metallb)
+#   - NFS Provisioner (GitHub: kubernetes-sigs/nfs-subdir-external-provisioner)
 #   - CNI Plugins (GitHub: containernetworking/plugins)
 #
 
@@ -84,6 +85,7 @@ echo ""
 # Current versions from config
 CURRENT_TIGERA=$(yaml_get "$VERSIONS_FILE" ".calico.tigera_operator" "")
 CURRENT_METALLB=$(yaml_get "$VERSIONS_FILE" ".metallb.version" "")
+CURRENT_NFS=$(yaml_get "$VERSIONS_FILE" ".nfs_provisioner.version" "")
 CURRENT_CNI=$(yaml_get "$VERSIONS_FILE" ".cni_plugins.version" "")
 
 # Validate current versions have images available
@@ -104,6 +106,12 @@ if $CAN_CHECK_IMAGES; then
         HAS_MISSING=true
     fi
 
+    # Check NFS Provisioner
+    if ! image_exists "${IMAGE_REGISTRY}/nfs-subdir-external-provisioner:${CURRENT_NFS}"; then
+        MISSING_IMAGES+=("NFS Provisioner ${CURRENT_NFS} (nfs-subdir-external-provisioner:${CURRENT_NFS})")
+        HAS_MISSING=true
+    fi
+
     if $HAS_MISSING; then
         echo ""
         log_warn "Configured versions missing from registry:"
@@ -118,10 +126,13 @@ log_info "Fetching latest versions from GitHub..."
 
 LATEST_TIGERA=$(github_latest_release "tigera/operator")
 LATEST_METALLB=$(github_latest_release "metallb/metallb")
+LATEST_NFS=$(github_latest_release "kubernetes-sigs/nfs-subdir-external-provisioner")
 LATEST_CNI=$(github_latest_release "containernetworking/plugins")
 
 # MetalLB uses vX.Y.Z format, we store as X.Y
 LATEST_METALLB_MINOR=$(echo "$LATEST_METALLB" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')
+# NFS uses nfs-subdir-external-provisioner-X.Y.Z format, extract version
+LATEST_NFS_CLEAN=$(echo "$LATEST_NFS" | sed -E 's/^nfs-subdir-external-provisioner-//')
 LATEST_CNI_CLEAN="${LATEST_CNI#v}"
 
 echo ""
@@ -157,6 +168,19 @@ else
     fi
 fi
 
+# Check NFS Provisioner (validate image exists)
+if [[ "$CURRENT_NFS" == "$LATEST_NFS_CLEAN" ]]; then
+    printf "  %-20s %-12s %s\n" "NFS Provisioner:" "$CURRENT_NFS" "(up to date)"
+else
+    if image_exists "${IMAGE_REGISTRY}/nfs-subdir-external-provisioner:${LATEST_NFS_CLEAN}"; then
+        printf "  %-20s %-12s -> %-12s %s\n" "NFS Provisioner:" "$CURRENT_NFS" "$LATEST_NFS_CLEAN" "(update available)"
+        UPDATE_NFS="$LATEST_NFS_CLEAN"
+        HAS_UPDATES=true
+    else
+        printf "  %-20s %-12s -> %-12s %s\n" "NFS Provisioner:" "$CURRENT_NFS" "$LATEST_NFS_CLEAN" "(image not available)"
+    fi
+fi
+
 # Check CNI Plugins (no image check - installed as APK packages)
 if [[ "$CURRENT_CNI" == "$LATEST_CNI_CLEAN" ]]; then
     printf "  %-20s %-12s %s\n" "CNI Plugins:" "$CURRENT_CNI" "(up to date)"
@@ -182,13 +206,21 @@ if $UPDATE && $HAS_UPDATES; then
     fi
 
     if [[ -n "${UPDATE_METALLB:-}" ]]; then
-        # MetalLB is under metallb: section, need to be more specific
         if [[ "$(uname)" == "Darwin" ]]; then
             sed -i '' "/^metallb:/,/^[a-z]/ s/^\(  version: *\"\)v\{0,1\}[0-9.]*\(\"\)/\1${UPDATE_METALLB}\2/" "$VERSIONS_FILE"
         else
             sed -i "/^metallb:/,/^[a-z]/ s/^\(  version: *\"\)v\{0,1\}[0-9.]*\(\"\)/\1${UPDATE_METALLB}\2/" "$VERSIONS_FILE"
         fi
         log_success "  Updated MetalLB to $UPDATE_METALLB"
+    fi
+
+    if [[ -n "${UPDATE_NFS:-}" ]]; then
+        if [[ "$(uname)" == "Darwin" ]]; then
+            sed -i '' "/^nfs_provisioner:/,/^[a-z]/ s/^\(  version: *\"\)v\{0,1\}[0-9.]*\(\"\)/\1${UPDATE_NFS}\2/" "$VERSIONS_FILE"
+        else
+            sed -i "/^nfs_provisioner:/,/^[a-z]/ s/^\(  version: *\"\)v\{0,1\}[0-9.]*\(\"\)/\1${UPDATE_NFS}\2/" "$VERSIONS_FILE"
+        fi
+        log_success "  Updated NFS Provisioner to $UPDATE_NFS"
     fi
 
     if [[ -n "${UPDATE_CNI:-}" ]]; then
