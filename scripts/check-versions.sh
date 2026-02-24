@@ -10,6 +10,7 @@
 #   -h, --help         Show this help message
 #
 # Components checked:
+#   - Kubernetes (GitHub: kubernetes/kubernetes)
 #   - Tigera Operator (GitHub: tigera/operator) - determines Calico version
 #   - MetalLB (GitHub: metallb/metallb)
 #   - NFS Provisioner (GitHub: kubernetes-sigs/nfs-subdir-external-provisioner)
@@ -83,6 +84,7 @@ fi
 echo ""
 
 # Current versions from config
+CURRENT_K8S=$(yaml_get "$VERSIONS_FILE" ".kubernetes.version" "")
 CURRENT_TIGERA=$(yaml_get "$VERSIONS_FILE" ".calico.tigera_operator" "")
 CURRENT_METALLB=$(yaml_get "$VERSIONS_FILE" ".metallb.version" "")
 CURRENT_NFS=$(yaml_get "$VERSIONS_FILE" ".nfs_provisioner.version" "")
@@ -92,6 +94,12 @@ CURRENT_CNI=$(yaml_get "$VERSIONS_FILE" ".cni_plugins.version" "")
 if $CAN_CHECK_IMAGES; then
     HAS_MISSING=false
     MISSING_IMAGES=()
+
+    # Check Kubernetes
+    if ! image_exists "${IMAGE_REGISTRY}/kubernetes-kube-apiserver:${CURRENT_K8S}"; then
+        MISSING_IMAGES+=("Kubernetes ${CURRENT_K8S} (kubernetes-kube-apiserver:${CURRENT_K8S})")
+        HAS_MISSING=true
+    fi
 
     # Check Tigera Operator
     TIGERA_TAG="${CURRENT_TIGERA#v}"
@@ -124,11 +132,14 @@ fi
 # Fetch latest versions
 log_info "Fetching latest versions from GitHub..."
 
+LATEST_K8S=$(github_latest_release "kubernetes/kubernetes")
 LATEST_TIGERA=$(github_latest_release "tigera/operator")
 LATEST_METALLB=$(github_latest_release "metallb/metallb")
 LATEST_NFS=$(github_latest_release "kubernetes-sigs/nfs-subdir-external-provisioner")
 LATEST_CNI=$(github_latest_release "containernetworking/plugins")
 
+# Kubernetes uses vX.Y.Z format, Chainguard uses X.Y
+LATEST_K8S_MINOR=$(echo "$LATEST_K8S" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')
 # MetalLB uses vX.Y.Z format, we store as X.Y
 LATEST_METALLB_MINOR=$(echo "$LATEST_METALLB" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')
 # NFS uses nfs-subdir-external-provisioner-X.Y.Z format, extract version
@@ -139,6 +150,19 @@ echo ""
 log_info "Version comparison:"
 
 HAS_UPDATES=false
+
+# Check Kubernetes (validate image exists)
+if [[ "$CURRENT_K8S" == "$LATEST_K8S_MINOR" ]]; then
+    printf "  %-20s %-12s %s\n" "Kubernetes:" "$CURRENT_K8S" "(up to date)"
+else
+    if image_exists "${IMAGE_REGISTRY}/kubernetes-kube-apiserver:${LATEST_K8S_MINOR}"; then
+        printf "  %-20s %-12s -> %-12s %s\n" "Kubernetes:" "$CURRENT_K8S" "$LATEST_K8S_MINOR" "(update available)"
+        UPDATE_K8S="$LATEST_K8S_MINOR"
+        HAS_UPDATES=true
+    else
+        printf "  %-20s %-12s -> %-12s %s\n" "Kubernetes:" "$CURRENT_K8S" "$LATEST_K8S_MINOR" "(image not available)"
+    fi
+fi
 
 # Check Tigera Operator (validate image exists)
 if [[ "$CURRENT_TIGERA" == "$LATEST_TIGERA" ]]; then
@@ -195,6 +219,15 @@ echo ""
 # Apply updates if requested
 if $UPDATE && $HAS_UPDATES; then
     log_info "Updating versions.yaml..."
+
+    if [[ -n "${UPDATE_K8S:-}" ]]; then
+        if [[ "$(uname)" == "Darwin" ]]; then
+            sed -i '' "/^kubernetes:/,/^[a-z]/ s/^\(  version: *\"\)v\{0,1\}[0-9.]*\(\"\)/\1${UPDATE_K8S}\2/" "$VERSIONS_FILE"
+        else
+            sed -i "/^kubernetes:/,/^[a-z]/ s/^\(  version: *\"\)v\{0,1\}[0-9.]*\(\"\)/\1${UPDATE_K8S}\2/" "$VERSIONS_FILE"
+        fi
+        log_success "  Updated Kubernetes to $UPDATE_K8S"
+    fi
 
     if [[ -n "${UPDATE_TIGERA:-}" ]]; then
         if [[ "$(uname)" == "Darwin" ]]; then
