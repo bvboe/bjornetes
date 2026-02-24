@@ -328,8 +328,14 @@ echo ""
 # Install CNI (Calico)
 log_info "Installing Calico CNI..."
 
+# Derive Calico version from operator version (1.40.x -> 3.31.x)
+# Operator minor - 9 = Calico minor (e.g., 40 - 9 = 31)
+OPERATOR_MINOR=$(echo "$TIGERA_OPERATOR_VERSION" | sed -E 's/^v?[0-9]+\.([0-9]+).*/\1/')
+CALICO_MINOR=$((OPERATOR_MINOR - 9))
+CALICO_MANIFEST_VERSION="v3.${CALICO_MINOR}"
+
 # Install Tigera operator
-vm_ssh "$CP_IP" "kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
+vm_ssh "$CP_IP" "kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/${CALICO_MANIFEST_VERSION}/manifests/tigera-operator.yaml"
 
 # Patch Tigera operator to use Chainguard image
 log_info "Patching Tigera operator to use Chainguard image..."

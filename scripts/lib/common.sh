@@ -216,8 +216,7 @@ load_versions() {
         # Set defaults
         CG_REGISTRY="${CG_REGISTRY:-cgr.dev/chainguard}"
         CG_K8S_TAG="${CG_K8S_TAG:-1.35}"
-        CALICO_VERSION="${CALICO_VERSION:-v3.31.3}"
-        TIGERA_OPERATOR_VERSION="${TIGERA_OPERATOR_VERSION:-v1.40.4}"
+        TIGERA_OPERATOR_VERSION="${TIGERA_OPERATOR_VERSION:-v1.40.6}"
         METALLB_VERSION="${METALLB_VERSION:-0.15}"
         METALLB_FRR_VERSION="${METALLB_FRR_VERSION:-10.5}"
         NFS_PROVISIONER_VERSION="${NFS_PROVISIONER_VERSION:-4.0}"
@@ -229,8 +228,7 @@ load_versions() {
     # Load versions from config
     CG_REGISTRY=$(yaml_get "$versions_file" ".images.registry" "cgr.dev/chainguard")
     CG_K8S_TAG=$(yaml_get "$versions_file" ".kubernetes.version" "1.35")
-    CALICO_VERSION=$(yaml_get "$versions_file" ".calico.version" "v3.31.3")
-    TIGERA_OPERATOR_VERSION=$(yaml_get "$versions_file" ".calico.tigera_operator" "v1.40.4")
+    TIGERA_OPERATOR_VERSION=$(yaml_get "$versions_file" ".calico.tigera_operator" "v1.40.6")
     METALLB_VERSION=$(yaml_get "$versions_file" ".metallb.version" "0.15")
     METALLB_FRR_VERSION=$(yaml_get "$versions_file" ".metallb.frr_version" "10.5")
     NFS_PROVISIONER_VERSION=$(yaml_get "$versions_file" ".nfs_provisioner.version" "4.0")
