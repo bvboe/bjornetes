@@ -428,6 +428,7 @@ KUBECONFIG="$PROJECT_DIR/kubeconfig" helm repo add metallb https://metallb.githu
 KUBECONFIG="$PROJECT_DIR/kubeconfig" helm repo update
 KUBECONFIG="$PROJECT_DIR/kubeconfig" helm upgrade --install --wait \
     --namespace metallb-system --create-namespace \
+    --version ${METALLB_CHART_VERSION} \
     --set controller.image.repository=${CG_REGISTRY}/metallb-controller \
     --set controller.image.tag=${METALLB_VERSION} \
     --set speaker.image.repository=${CG_REGISTRY}/metallb-speaker \

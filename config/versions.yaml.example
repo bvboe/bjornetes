@@ -20,8 +20,13 @@ calico:
   tigera_operator: "v1.40.4"
 
 # MetalLB load balancer
+#   version       — controller/speaker image tag (Chainguard)
+#   chart_version — Helm chart version (must match the binary; chart and
+#                   image drift independently)
+#   frr_version   — FRR image tag
 metallb:
   version: "0.15"
+  chart_version: "0.15.3"
   frr_version: "10.5"
 
 # NFS subdir external provisioner

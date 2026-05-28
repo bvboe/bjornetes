@@ -41,15 +41,17 @@ require_cmd() {
 }
 
 # YAML parsing using yq (https://github.com/mikefarah/yq)
-# Falls back to python if yq is not available
+# Falls back to python if yq is not available.
+# Note: `yaml_path` not `path` — in zsh `$path` is a magic array tied to
+# $PATH, so a `local path=...` would silently clobber PATH for the call.
 yaml_get() {
     local file="$1"
-    local path="$2"
+    local yaml_path="$2"
     local default="${3:-}"
 
     if command -v yq &>/dev/null; then
         local result
-        result=$(yq -r "$path // \"__NULL__\"" "$file" 2>/dev/null)
+        result=$(yq -r "$yaml_path // \"__NULL__\"" "$file" 2>/dev/null)
         if [[ "$result" == "__NULL__" || "$result" == "null" ]]; then
             echo "$default"
         else
@@ -63,7 +65,7 @@ import sys
 with open('$file', 'r') as f:
     data = yaml.safe_load(f)
 
-path = '$path'.lstrip('.')
+path = '$yaml_path'.lstrip('.')
 parts = path.replace('[', '.').replace(']', '').split('.')
 parts = [p for p in parts if p]
 
@@ -86,10 +88,10 @@ except (KeyError, IndexError, TypeError):
 # Get all keys at a path
 yaml_keys() {
     local file="$1"
-    local path="$2"
+    local yaml_path="$2"
 
     if command -v yq &>/dev/null; then
-        yq -r "$path | keys | .[]" "$file" 2>/dev/null || true
+        yq -r "$yaml_path | keys | .[]" "$file" 2>/dev/null || true
     elif command -v python3 &>/dev/null; then
         python3 -c "
 import yaml
@@ -97,7 +99,7 @@ import yaml
 with open('$file', 'r') as f:
     data = yaml.safe_load(f)
 
-path = '$path'.lstrip('.')
+path = '$yaml_path'.lstrip('.')
 parts = path.replace('[', '.').replace(']', '').split('.')
 parts = [p for p in parts if p]
 
@@ -121,8 +123,8 @@ except (KeyError, IndexError, TypeError):
 
 # Expand ~ in paths
 expand_path() {
-    local path="$1"
-    echo "${path/#\~/$HOME}"
+    local input="$1"
+    echo "${input/#\~/$HOME}"
 }
 
 # Generate a name from pattern
@@ -219,6 +221,7 @@ load_versions() {
         CALICO_VERSION="${CALICO_VERSION:-v3.31.3}"
         TIGERA_OPERATOR_VERSION="${TIGERA_OPERATOR_VERSION:-v1.40.6}"
         METALLB_VERSION="${METALLB_VERSION:-0.15}"
+        METALLB_CHART_VERSION="${METALLB_CHART_VERSION:-0.15.3}"
         METALLB_FRR_VERSION="${METALLB_FRR_VERSION:-10.5}"
         NFS_PROVISIONER_VERSION="${NFS_PROVISIONER_VERSION:-4.0}"
         CNI_PLUGINS_VERSION="${CNI_PLUGINS_VERSION:-1.6.2}"
@@ -232,6 +235,7 @@ load_versions() {
     CALICO_VERSION=$(yaml_get "$versions_file" ".calico.version" "v3.31.3")
     TIGERA_OPERATOR_VERSION=$(yaml_get "$versions_file" ".calico.tigera_operator" "v1.40.6")
     METALLB_VERSION=$(yaml_get "$versions_file" ".metallb.version" "0.15")
+    METALLB_CHART_VERSION=$(yaml_get "$versions_file" ".metallb.chart_version" "0.15.3")
     METALLB_FRR_VERSION=$(yaml_get "$versions_file" ".metallb.frr_version" "10.5")
     NFS_PROVISIONER_VERSION=$(yaml_get "$versions_file" ".nfs_provisioner.version" "4.0")
     CNI_PLUGINS_VERSION=$(yaml_get "$versions_file" ".cni_plugins.version" "1.6.2")

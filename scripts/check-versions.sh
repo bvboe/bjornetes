@@ -13,7 +13,7 @@
 #   - Kubernetes (GitHub: kubernetes/kubernetes)
 #   - Calico (GitHub: projectcalico/calico)
 #   - Tigera Operator (GitHub: tigera/operator)
-#   - MetalLB (GitHub: metallb/metallb)
+#   - MetalLB binary + Helm chart (GitHub: metallb/metallb)
 #   - NFS Provisioner (GitHub: kubernetes-sigs/nfs-subdir-external-provisioner)
 #   - CNI Plugins (GitHub: containernetworking/plugins)
 #
@@ -70,10 +70,18 @@ image_exists() {
     fi
 }
 
-# Get latest GitHub release tag
+# Get latest GitHub release tag.
+# Optional second arg is an ERE matched against tag names; when set, /releases
+# is scanned and the newest matching tag wins (used to skip metallb's
+# interleaved "metallb-chart-*" tags).
 github_latest_release() {
     local repo="$1"
-    curl -s "https://api.github.com/repos/${repo}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/'
+    local pattern="${2:-}"
+    if [[ -z "$pattern" ]]; then
+        curl -s "https://api.github.com/repos/${repo}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/'
+    else
+        curl -s "https://api.github.com/repos/${repo}/releases?per_page=30" | grep '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/' | grep -E "$pattern" | head -1
+    fi
 }
 
 log_info "Checking component versions..."
@@ -89,6 +97,7 @@ CURRENT_K8S=$(yaml_get "$VERSIONS_FILE" ".kubernetes.version" "")
 CURRENT_CALICO=$(yaml_get "$VERSIONS_FILE" ".calico.version" "")
 CURRENT_TIGERA=$(yaml_get "$VERSIONS_FILE" ".calico.tigera_operator" "")
 CURRENT_METALLB=$(yaml_get "$VERSIONS_FILE" ".metallb.version" "")
+CURRENT_METALLB_CHART=$(yaml_get "$VERSIONS_FILE" ".metallb.chart_version" "")
 CURRENT_NFS=$(yaml_get "$VERSIONS_FILE" ".nfs_provisioner.version" "")
 CURRENT_CNI=$(yaml_get "$VERSIONS_FILE" ".cni_plugins.version" "")
 
@@ -144,7 +153,8 @@ log_info "Fetching latest versions from GitHub..."
 LATEST_K8S=$(github_latest_release "kubernetes/kubernetes")
 LATEST_CALICO=$(github_latest_release "projectcalico/calico")
 LATEST_TIGERA=$(github_latest_release "tigera/operator")
-LATEST_METALLB=$(github_latest_release "metallb/metallb")
+LATEST_METALLB=$(github_latest_release "metallb/metallb" '^v[0-9]')
+LATEST_METALLB_CHART=$(github_latest_release "metallb/metallb" '^metallb-chart-[0-9]')
 LATEST_NFS=$(github_latest_release "kubernetes-sigs/nfs-subdir-external-provisioner")
 LATEST_CNI=$(github_latest_release "containernetworking/plugins")
 
@@ -152,6 +162,8 @@ LATEST_CNI=$(github_latest_release "containernetworking/plugins")
 LATEST_K8S_MINOR=$(echo "$LATEST_K8S" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')
 # MetalLB uses vX.Y.Z format, we store as X.Y
 LATEST_METALLB_MINOR=$(echo "$LATEST_METALLB" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')
+# MetalLB chart tags are metallb-chart-X.Y.Z; strip the prefix
+LATEST_METALLB_CHART_CLEAN="${LATEST_METALLB_CHART#metallb-chart-}"
 # NFS uses nfs-subdir-external-provisioner-X.Y.Z format, extract version
 LATEST_NFS_CLEAN=$(echo "$LATEST_NFS" | sed -E 's/^nfs-subdir-external-provisioner-//')
 LATEST_CNI_CLEAN="${LATEST_CNI#v}"
@@ -217,6 +229,15 @@ else
     fi
 fi
 
+# Check MetalLB Helm chart — chart and image drift independently in this repo
+if [[ "$CURRENT_METALLB_CHART" == "$LATEST_METALLB_CHART_CLEAN" ]]; then
+    printf "  %-20s %-12s %s\n" "MetalLB chart:" "$CURRENT_METALLB_CHART" "(up to date)"
+else
+    printf "  %-20s %-12s -> %-12s %s\n" "MetalLB chart:" "$CURRENT_METALLB_CHART" "$LATEST_METALLB_CHART_CLEAN" "(update available)"
+    UPDATE_METALLB_CHART="$LATEST_METALLB_CHART_CLEAN"
+    HAS_UPDATES=true
+fi
+
 # Check NFS Provisioner (validate image exists)
 if [[ "$CURRENT_NFS" == "$LATEST_NFS_CLEAN" ]]; then
     printf "  %-20s %-12s %s\n" "NFS Provisioner:" "$CURRENT_NFS" "(up to date)"
@@ -279,6 +300,15 @@ if $UPDATE && $HAS_UPDATES; then
             sed -i "/^metallb:/,/^[a-z]/ s/^\(  version: *\"\)v\{0,1\}[0-9.]*\(\"\)/\1${UPDATE_METALLB}\2/" "$VERSIONS_FILE"
         fi
         log_success "  Updated MetalLB to $UPDATE_METALLB"
+    fi
+
+    if [[ -n "${UPDATE_METALLB_CHART:-}" ]]; then
+        if [[ "$(uname)" == "Darwin" ]]; then
+            sed -i '' "s/^\(  chart_version: *\"\)[0-9.]*\(\"\)/\1${UPDATE_METALLB_CHART}\2/" "$VERSIONS_FILE"
+        else
+            sed -i "s/^\(  chart_version: *\"\)[0-9.]*\(\"\)/\1${UPDATE_METALLB_CHART}\2/" "$VERSIONS_FILE"
+        fi
+        log_success "  Updated MetalLB chart to $UPDATE_METALLB_CHART"
     fi
 
     if [[ -n "${UPDATE_NFS:-}" ]]; then
