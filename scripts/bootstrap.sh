@@ -118,51 +118,156 @@ echo ""
 # Chainguard image configuration (loaded from versions.yaml via load_versions)
 # CG_REGISTRY and CG_K8S_TAG are set by load_versions()
 
-# Configure containerd pause image
-# Note: We use the standard pause image since it's publicly available
-# The Chainguard pause image requires authentication
-configure_containerd_pause() {
+# Restart containerd so it picks up any config changes before kubeadm runs.
+#
+# The sandbox (pause) image itself needs nothing here: containerd resolves it
+# when it creates the first sandbox, which happens after prepare_k8s_images has
+# retagged the Chainguard pause onto the reference containerd asks for.
+configure_containerd() {
     local ip="$1"
     log_info "Configuring containerd on $ip..."
 
-    # Ensure the standard pause image is used (already available, no auth required)
-    # containerd config should already have the correct default
     vm_ssh "$ip" "sudo systemctl restart containerd"
 
     log_success "Containerd configured on $ip"
 }
 
-# Pre-pull and tag Kubernetes images for kubeadm
+KUBEADM_CONFIG_PATH="/tmp/kubeadm-config.yaml"
+
+# Write the kubeadm config that `kubeadm init` runs from.
+#
+# etcd and CoreDNS are handled here rather than by retagging. kubeadm builds those
+# two references as <imageRepository>/etcd:<tag> and <imageRepository>/coredns:<tag>
+# (see GetEtcdImage/GetDNSImage in cmd/kubeadm/app/images/images.go), which is
+# exactly how Chainguard names them — so pointing kubeadm straight at the
+# Chainguard registry makes the manifest reference the real image instead of a
+# registry.k8s.io name with something else behind it.
+#
+# Leave a version at "kubeadm" to keep its pinned version, which is then mirrored
+# by prepare_k8s_images the same way the kube-* images are.
+write_kubeadm_config() {
+    local ip="$1"
+
+    local etcd_block=""
+    local dns_block=""
+
+    if [[ "$ETCD_VERSION" == "kubeadm" ]]; then
+        log_info "etcd: using the version kubeadm pins"
+    else
+        log_warn "etcd: overriding kubeadm's pin with ${CG_REGISTRY}/etcd:${ETCD_VERSION}"
+        etcd_block=$(printf 'etcd:\n  local:\n    imageRepository: %s\n    imageTag: %s' \
+            "$CG_REGISTRY" "$ETCD_VERSION")
+    fi
+
+    if [[ "$COREDNS_VERSION" == "kubeadm" ]]; then
+        log_info "CoreDNS: using the version kubeadm pins"
+    else
+        log_warn "CoreDNS: overriding kubeadm's pin with ${CG_REGISTRY}/coredns:${COREDNS_VERSION}"
+        dns_block=$(printf 'dns:\n  imageRepository: %s\n  imageTag: %s' \
+            "$CG_REGISTRY" "$COREDNS_VERSION")
+    fi
+
+    vm_ssh "$ip" "cat > $KUBEADM_CONFIG_PATH" << EOF
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: ${ip}
+  bindPort: 6443
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: v${KUBEADM_VERSION}
+networking:
+  podSubnet: ${POD_CIDR}
+  serviceSubnet: ${SERVICE_CIDR}
+${etcd_block}
+${dns_block}
+EOF
+
+    log_success "kubeadm config written to ${ip}:${KUBEADM_CONFIG_PATH}"
+}
+
+# Ask kubeadm which images this cluster needs, given the config above.
+#
+# Reading the list from kubeadm rather than from a hardcoded table is what keeps
+# the mirror honest: kubeadm's etcd and CoreDNS pins move with the Kubernetes
+# minor, and a stale entry is invisible — the pull succeeds, the retag names an
+# image kubeadm never requests, and kubeadm pulls the upstream Debian-based image.
+K8S_IMAGES=()
+resolve_k8s_images() {
+    local ip="$1"
+
+    local image_list
+    image_list=$(vm_ssh "$ip" "kubeadm config images list --config $KUBEADM_CONFIG_PATH") \
+        || die "Could not read the required image list from kubeadm on $ip"
+
+    # Collect first, then act: vm_ssh reads stdin, so calling it inside a
+    # `while read` loop fed by this list would swallow the remaining lines.
+    local line
+    while IFS= read -r line; do
+        # An `x && y` as the last command in the body would take set -e down
+        # with it on a blank line, mid-bootstrap and without a message
+        if [[ -n "$line" ]]; then
+            K8S_IMAGES+=("$line")
+        fi
+    done <<< "$image_list"
+    [[ ${#K8S_IMAGES[@]} -gt 0 ]] || die "kubeadm on $ip reported no required images"
+
+    log_info "Images required by kubeadm:"
+    local img
+    for img in "${K8S_IMAGES[@]}"; do
+        printf "    %s\n" "$img"
+    done
+}
+
+# Pull the Chainguard images and, where kubeadm insists on a registry.k8s.io
+# reference, tag them onto it.
 prepare_k8s_images() {
     local ip="$1"
-    local k8s_version="$2"
 
     log_info "Preparing Kubernetes images on $ip..."
 
-    # Pull Chainguard images and tag for kubeadm
-    local images=(
-        "kubernetes-kube-apiserver:${CG_K8S_TAG}:kube-apiserver:v${k8s_version}"
-        "kubernetes-kube-controller-manager:${CG_K8S_TAG}:kube-controller-manager:v${k8s_version}"
-        "kubernetes-kube-scheduler:${CG_K8S_TAG}:kube-scheduler:v${k8s_version}"
-        "kubernetes-kube-proxy:${CG_K8S_TAG}:kube-proxy:v${k8s_version}"
-        "etcd:3.6:etcd:3.6.6-0"
-        "coredns:latest:coredns:v1.13.1"
-    )
-
-    for img_spec in "${images[@]}"; do
-        IFS=':' read -r src_name src_tag dst_name dst_tag <<< "$img_spec"
-        local src="${CG_REGISTRY}/${src_name}:${src_tag}"
-        local dst="registry.k8s.io/${dst_name}:${dst_tag}"
-
-        # coredns has a different path
-        if [[ "$dst_name" == "coredns" ]]; then
-            dst="registry.k8s.io/coredns/coredns:${dst_tag}"
+    local failed=()
+    local unmirrored=()
+    local dst src
+    for dst in "${K8S_IMAGES[@]}"; do
+        # Already pointing at Chainguard (the etcd/CoreDNS overrides): the
+        # reference needs no retag, just a pre-pull so the kubelet finds it.
+        if [[ "$dst" == "${CG_REGISTRY}"/* ]]; then
+            if vm_ssh "$ip" "sudo ctr -n k8s.io images pull '${dst}'"; then
+                log_success "  $dst"
+            else
+                failed+=("$dst")
+            fi
+            continue
         fi
 
-        vm_ssh "$ip" "sudo ctr -n k8s.io images pull '${src}' && sudo ctr -n k8s.io images tag '${src}' '${dst}'" || {
-            log_warn "  Failed to prepare $dst_name, will try online pull"
-        }
+        src=$(cg_image_for "$dst")
+        if [[ -z "$src" ]]; then
+            unmirrored+=("$dst")
+            continue
+        fi
+
+        if vm_ssh "$ip" "sudo ctr -n k8s.io images pull '${src}' && sudo ctr -n k8s.io images tag --force '${src}' '${dst}'"; then
+            log_success "  $dst <- $src"
+        else
+            failed+=("$dst <- $src")
+        fi
     done
+
+    if [[ ${#failed[@]} -gt 0 ]]; then
+        log_error "Could not mirror Chainguard images onto the tags kubeadm requires:"
+        for dst in "${failed[@]}"; do
+            log_error "  $dst"
+        done
+        die "Refusing to continue: kubeadm would pull these from registry.k8s.io instead. Run ./scripts/check-versions.sh to see which Chainguard tags are available."
+    fi
+
+    if [[ ${#unmirrored[@]} -gt 0 ]]; then
+        for dst in "${unmirrored[@]}"; do
+            log_warn "  No Chainguard mirror for $dst - will be pulled from upstream"
+        done
+    fi
 
     log_success "Kubernetes images prepared on $ip"
 }
@@ -297,7 +402,7 @@ echo ""
 # Configure containerd pause image on all nodes
 log_info "Configuring containerd for Chainguard images..."
 for ip in "${CP_IPS[@]}" "${WORKER_IPS[@]}"; do
-    configure_containerd_pause "$ip"
+    configure_containerd "$ip"
 done
 echo ""
 
@@ -309,15 +414,18 @@ log_info "Initializing control plane on $CP_IP..."
 KUBEADM_VERSION=$(vm_ssh "$CP_IP" "kubeadm version -o short" | tr -d 'v')
 log_info "Using kubeadm version: $KUBEADM_VERSION"
 
-# Prepare Kubernetes images on control plane
-prepare_k8s_images "$CP_IP" "$KUBEADM_VERSION"
+# The config carries what used to be init flags (--pod-network-cidr,
+# --service-cidr, --apiserver-advertise-address, --kubernetes-version); kubeadm
+# rejects mixing --config with those.
+write_kubeadm_config "$CP_IP"
+resolve_k8s_images "$CP_IP"
 echo ""
 
-vm_ssh "$CP_IP" "sudo kubeadm init \
-    --kubernetes-version=$KUBEADM_VERSION \
-    --pod-network-cidr=$POD_CIDR \
-    --service-cidr=$SERVICE_CIDR \
-    --apiserver-advertise-address=$CP_IP" || die "kubeadm init failed"
+# Prepare Kubernetes images on control plane
+prepare_k8s_images "$CP_IP"
+echo ""
+
+vm_ssh "$CP_IP" "sudo kubeadm init --config $KUBEADM_CONFIG_PATH" || die "kubeadm init failed"
 
 # Set up kubectl for the user
 vm_ssh "$CP_IP" "mkdir -p ~/.kube && sudo cp /etc/kubernetes/admin.conf ~/.kube/config && sudo chown \$(id -u):\$(id -g) ~/.kube/config"
@@ -391,7 +499,7 @@ JOIN_CMD=$(vm_ssh "$CP_IP" "sudo kubeadm token create --print-join-command")
 # Prepare images on workers (kube-proxy is needed)
 log_info "Preparing Kubernetes images on workers..."
 for ip in "${WORKER_IPS[@]}"; do
-    prepare_k8s_images "$ip" "$KUBEADM_VERSION"
+    prepare_k8s_images "$ip"
 done
 echo ""
 
@@ -423,18 +531,48 @@ KUBECONFIG="$PROJECT_DIR/kubeconfig" kubectl get nodes
 echo ""
 
 # Install MetalLB
-log_info "Installing MetalLB..."
+log_info "Installing MetalLB (BGP backend: ${METALLB_BGP_BACKEND})..."
 KUBECONFIG="$PROJECT_DIR/kubeconfig" helm repo add metallb https://metallb.github.io/metallb 2>/dev/null || true
 KUBECONFIG="$PROJECT_DIR/kubeconfig" helm repo update
+
+METALLB_ARGS=(
+    --set controller.image.repository=${CG_REGISTRY}/metallb-controller
+    --set controller.image.tag=${METALLB_VERSION}
+    --set speaker.image.repository=${CG_REGISTRY}/metallb-speaker
+    --set speaker.image.tag=${METALLB_VERSION}
+)
+
+# The chart ships frrk8s.enabled=true, which drops a five-container frr-k8s
+# DaemonSet from quay.io onto every node. There is no Chainguard frr-k8s image,
+# and L2Advertisement (the default in metallb-config.yaml) needs no BGP backend
+# at all, so leave it off unless BGP is actually configured.
+case "$METALLB_BGP_BACKEND" in
+    none)
+        METALLB_ARGS+=(
+            --set frrk8s.enabled=false
+            --set speaker.frr.enabled=false
+        )
+        ;;
+    frr-k8s)
+        log_warn "BGP backend frr-k8s has no Chainguard image: the frr-k8s"
+        log_warn "controller will come from quay.io. Only its FRR containers"
+        log_warn "can be pointed at Chainguard."
+        METALLB_ARGS+=(
+            --set frrk8s.enabled=true
+            --set speaker.frr.enabled=false
+            --set frr-k8s.frrk8s.frr.image.repository=${CG_REGISTRY}/frr
+            --set frr-k8s.frrk8s.frr.image.tag=${METALLB_FRR_VERSION}
+        )
+        ;;
+    *)
+        die "Unknown metallb.bgp_backend: '$METALLB_BGP_BACKEND' (expected 'none' or 'frr-k8s')"
+        ;;
+esac
+
 KUBECONFIG="$PROJECT_DIR/kubeconfig" helm upgrade --install --wait \
     --namespace metallb-system --create-namespace \
     --version ${METALLB_CHART_VERSION} \
-    --set controller.image.repository=${CG_REGISTRY}/metallb-controller \
-    --set controller.image.tag=${METALLB_VERSION} \
-    --set speaker.image.repository=${CG_REGISTRY}/metallb-speaker \
-    --set speaker.image.tag=${METALLB_VERSION} \
-    --set speaker.frr.image.repository=${CG_REGISTRY}/frr \
-    --set speaker.frr.image.tag=${METALLB_FRR_VERSION} \
+    "${METALLB_ARGS[@]}" \
     metallb metallb/metallb
 log_success "MetalLB installed"
 
@@ -483,8 +621,9 @@ KUBECONFIG="$PROJECT_DIR/kubeconfig" helm repo update metrics-server
 KUBECONFIG="$PROJECT_DIR/kubeconfig" helm install metrics-server \
     metrics-server/metrics-server \
     -n kube-system \
+    --version ${METRICS_SERVER_CHART_VERSION} \
     --set image.repository=${CG_REGISTRY}/metrics-server \
-    --set image.tag=latest \
+    --set image.tag=${METRICS_SERVER_VERSION} \
     --set args='{--kubelet-insecure-tls}'
 log_success "metrics-server installed"
 echo ""

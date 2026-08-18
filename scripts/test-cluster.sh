@@ -284,6 +284,24 @@ else
     test_fail "NFS mount and write" "Skipped (PVC not bound)"
 fi
 
+# Test 10: Chainguard-only supply chain
+#
+# Ignores this script's own fixtures (nginx/busybox, deleted on exit) and
+# bjorn2scan, which ships Wolfi-based images from ghcr.io rather than the
+# Chainguard registry.
+log_info "Test 10: Chainguard image audit"
+AUDIT_OUTPUT=$("$SCRIPT_DIR/audit-images.sh" \
+    --kubeconfig "$KUBECONFIG_FILE" \
+    --ignore '^(nginx|busybox):' \
+    --ignore '^ghcr\.io/bvboe/bjorn2scan/' 2>&1) && AUDIT_OK=true || AUDIT_OK=false
+
+if $AUDIT_OK; then
+    test_pass "All images are Chainguard-based"
+else
+    test_fail "Chainguard image audit" "Non-Chainguard images are running"
+    echo "$AUDIT_OUTPUT" | sed -n '/Not Chainguard/,$p' | while read -r line; do log_error "      $line"; done
+fi
+
 # Summary
 echo ""
 log_info "=========================================="

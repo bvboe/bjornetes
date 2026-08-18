@@ -12,6 +12,9 @@ config/versions.yaml
 tmp/
 *.qcow2
 
+# Remote debugging captures
+.remote-debug/
+
 # Claude Code settings
 .claude/settings.local.json
 scripts/.claude/settings.local.json

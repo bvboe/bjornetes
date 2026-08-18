@@ -218,12 +218,17 @@ load_versions() {
         # Set defaults
         CG_REGISTRY="${CG_REGISTRY:-cgr.dev/chainguard}"
         CG_K8S_TAG="${CG_K8S_TAG:-1.35}"
+        ETCD_VERSION="${ETCD_VERSION:-kubeadm}"
+        COREDNS_VERSION="${COREDNS_VERSION:-kubeadm}"
         CALICO_VERSION="${CALICO_VERSION:-v3.31.3}"
         TIGERA_OPERATOR_VERSION="${TIGERA_OPERATOR_VERSION:-v1.40.6}"
         METALLB_VERSION="${METALLB_VERSION:-0.15}"
         METALLB_CHART_VERSION="${METALLB_CHART_VERSION:-0.15.3}"
+        METALLB_BGP_BACKEND="${METALLB_BGP_BACKEND:-none}"
         METALLB_FRR_VERSION="${METALLB_FRR_VERSION:-10.5}"
         NFS_PROVISIONER_VERSION="${NFS_PROVISIONER_VERSION:-4.0}"
+        METRICS_SERVER_VERSION="${METRICS_SERVER_VERSION:-v0.8.0}"
+        METRICS_SERVER_CHART_VERSION="${METRICS_SERVER_CHART_VERSION:-3.13.1}"
         CNI_PLUGINS_VERSION="${CNI_PLUGINS_VERSION:-1.6.2}"
         VM_SSH_USER="${VM_SSH_USER:-linky}"
         return 0
@@ -232,14 +237,60 @@ load_versions() {
     # Load versions from config
     CG_REGISTRY=$(yaml_get "$versions_file" ".images.registry" "cgr.dev/chainguard")
     CG_K8S_TAG=$(yaml_get "$versions_file" ".kubernetes.version" "1.35")
+    # "kubeadm" means follow the version kubeadm pins; anything else is a
+    # Chainguard tag that overrides it via the generated kubeadm config
+    ETCD_VERSION=$(yaml_get "$versions_file" ".etcd.version" "kubeadm")
+    COREDNS_VERSION=$(yaml_get "$versions_file" ".coredns.version" "kubeadm")
     CALICO_VERSION=$(yaml_get "$versions_file" ".calico.version" "v3.31.3")
     TIGERA_OPERATOR_VERSION=$(yaml_get "$versions_file" ".calico.tigera_operator" "v1.40.6")
     METALLB_VERSION=$(yaml_get "$versions_file" ".metallb.version" "0.15")
     METALLB_CHART_VERSION=$(yaml_get "$versions_file" ".metallb.chart_version" "0.15.3")
+    METALLB_BGP_BACKEND=$(yaml_get "$versions_file" ".metallb.bgp_backend" "none")
     METALLB_FRR_VERSION=$(yaml_get "$versions_file" ".metallb.frr_version" "10.5")
     NFS_PROVISIONER_VERSION=$(yaml_get "$versions_file" ".nfs_provisioner.version" "4.0")
+    METRICS_SERVER_VERSION=$(yaml_get "$versions_file" ".metrics_server.version" "v0.8.0")
+    METRICS_SERVER_CHART_VERSION=$(yaml_get "$versions_file" ".metrics_server.chart_version" "3.13.1")
     CNI_PLUGINS_VERSION=$(yaml_get "$versions_file" ".cni_plugins.version" "1.6.2")
     VM_SSH_USER=$(yaml_get "$versions_file" ".vm_ssh_user" "linky")
 
     log_info "Loaded versions from $versions_file"
+}
+
+# Map an image reference that kubeadm asks for to its Chainguard equivalent,
+# or print nothing when no Chainguard mirror exists for it.
+#
+# kubeadm pins etcd and CoreDNS to versions of its own choosing, and those pins
+# move with the Kubernetes minor (1.35: etcd 3.6.6-0 / CoreDNS v1.13.1, 1.36:
+# etcd 3.6.8-0 / CoreDNS v1.14.2). Deriving the Chainguard source tag from the
+# tag kubeadm actually requested is what keeps the mirror honest: a hardcoded
+# pin that falls behind retags an image nothing asks for, and kubeadm then
+# quietly pulls the Debian-based upstream image instead.
+#
+# Requires CG_REGISTRY and CG_K8S_TAG (set by load_versions).
+cg_image_for() {
+    local ref="$1"
+    local repo="${ref%:*}"
+    local tag="${ref##*:}"
+
+    case "${repo#registry.k8s.io/}" in
+        kube-apiserver | kube-controller-manager | kube-scheduler | kube-proxy)
+            echo "${CG_REGISTRY}/kubernetes-${repo##*/}:${CG_K8S_TAG}"
+            ;;
+        etcd)
+            # kubeadm asks for X.Y.Z-N; Chainguard publishes vX.Y.Z
+            echo "${CG_REGISTRY}/etcd:v${tag%-*}"
+            ;;
+        coredns/coredns)
+            echo "${CG_REGISTRY}/coredns:${tag}"
+            ;;
+        pause)
+            # Chainguard ships pause as part of its kubernetes image family, so
+            # it is tagged with the Kubernetes version (1.36) rather than with
+            # pause's own version (3.10.2) — the requested tag is not usable here.
+            echo "${CG_REGISTRY}/kubernetes-pause:${CG_K8S_TAG}"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
 }

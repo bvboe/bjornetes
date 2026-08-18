@@ -116,8 +116,10 @@ reset_node() {
     # Reset iptables rules added by kube-proxy/calico
     vm_ssh "$ip" "sudo iptables -F && sudo iptables -t nat -F && sudo iptables -t mangle -F && sudo iptables -X 2>/dev/null || true"
 
-    # Stop kubelet if running
-    vm_ssh "$ip" "sudo rc-service kubelet stop 2>/dev/null || true"
+    # Stop kubelet if running. bootstrap.sh installs kubelet as a systemd unit,
+    # so the OpenRC call alone was a no-op and left the kubelet running against
+    # the state this script just deleted.
+    vm_ssh "$ip" "sudo systemctl stop kubelet 2>/dev/null || sudo rc-service kubelet stop 2>/dev/null || true"
 
     log_success "  $name reset complete"
 }

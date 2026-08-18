@@ -7,6 +7,29 @@
 kubernetes:
   version: "1.35"
 
+# etcd and CoreDNS are versioned by kubeadm, not by the Kubernetes minor above:
+# kubeadm 1.35 pins etcd 3.6.6-0, 1.36 pins 3.6.8-0 (see SupportedEtcdVersion in
+# cmd/kubeadm/app/constants/constants.go). Two options per component:
+#
+#   "kubeadm"  Use the version kubeadm pins. bootstrap.sh mirrors the Chainguard
+#              image onto the registry.k8s.io reference kubeadm asks for. This is
+#              the pair the Kubernetes release was tested against, and the default.
+#
+#   vX.Y.Z     A Chainguard tag. bootstrap.sh writes it into the generated kubeadm
+#              config (etcd.local.imageTag / dns.imageTag), so the etcd static pod
+#              and CoreDNS deployment reference the Chainguard image directly —
+#              no retagging, and the reference names what it actually runs.
+#
+# Running ahead of the pin is untested by upstream: the apiserver links etcd's
+# client and server libraries at the pinned version (see the go.etcd.io entries in
+# staging/src/k8s.io/apiserver/go.mod) and CI runs only that version. Note also
+# that setting imageTag stops kubeadm from moving these during an upgrade, so
+# check-versions.sh reports the pin you are diverging from on every run.
+etcd:
+  version: "kubeadm"
+coredns:
+  version: "kubeadm"
+
 # Container image settings
 images:
   # Default registry for Chainguard images
@@ -23,15 +46,29 @@ calico:
 #   version       — controller/speaker image tag (Chainguard)
 #   chart_version — Helm chart version (must match the binary; chart and
 #                   image drift independently)
-#   frr_version   — FRR image tag
+#   bgp_backend   — "none" or "frr-k8s". The chart defaults frrk8s.enabled to
+#                   true, which pulls quay.io/metallb/frr-k8s — there is no
+#                   Chainguard image for frr-k8s, so it is the one thing here
+#                   that breaks a Chainguard-only cluster. An L2Advertisement
+#                   setup (see metallb-config.yaml) does not need it.
+#   frr_version   — Chainguard FRR image tag, used only with bgp_backend=frr-k8s
 metallb:
   version: "0.15"
   chart_version: "0.15.3"
+  bgp_backend: "none"
   frr_version: "10.5"
 
 # NFS subdir external provisioner
 nfs_provisioner:
   version: "4.0"
+
+# metrics-server
+#   version       — image tag (Chainguard). Never "latest": the tag ends up in
+#                   the cluster and an unpinned tag is not reproducible.
+#   chart_version — Helm chart version
+metrics_server:
+  version: "v0.8.0"
+  chart_version: "3.13.1"
 
 # CNI plugins
 cni_plugins:
